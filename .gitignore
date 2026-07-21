@@ -1,0 +1,28 @@
+# Keil 编译输出
+MDK-ARM/Objects/
+MDK-ARM/Listings/
+Objects/
+Listings/
+
+# 编译生成文件
+*.o
+*.d
+*.axf
+*.hex
+*.map
+*.lst
+*.crf
+*.dep
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# 临时文件
+*.log
+*.tmp
+*.bak
