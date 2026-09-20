@@ -57,6 +57,11 @@ uint8_t uart_rx_byte=0;
 char uart_line_buf[UART_RX_BUF_SIZE];
 uint8_t uart_line_index=0;
 
+
+uint8_t action_in_progress = 0;
+
+hand_action_t active_action =
+    HAND_ACTION_NONE;
 volatile uint8_t hand_action_pending=0;
 volatile hand_action_t hand_pending_action=HAND_ACTION_NONE;
 
@@ -122,31 +127,69 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-		    if (hand_action_pending) {
+ while (1)
+{
+    /* 1. 有新命令，并且当前没有动作 */
+    if (hand_action_pending &&
+        !hand_servo_is_busy())
+    {
         hand_action_t action;
-				HAL_StatusTypeDef action_ret;
-				char ack_msg[64];
-					
+
         __disable_irq();
+
         action = hand_pending_action;
         hand_action_pending = 0;
+
         __enable_irq();
 
-				action_ret=hand_servo_apply_action(action);
-					
-     
-					snprintf(ack_msg, sizeof(ack_msg), "ACTION:%s %s\r\n", hand_action_to_ack_name(action),(action_ret==HAL_OK)?"OK":"FAIL");
-            HAL_UART_Transmit(&huart1, (uint8_t *)ack_msg, strlen(ack_msg), 100);
-      
-    
+
+        if (hand_servo_start_action(action) == HAL_OK)
+        {
+            active_action = action;
+            action_in_progress = 1;
+        }
     }
+
+
+    /* 2. 每一次主循环都必须推进状态机 */
+    HAL_StatusTypeDef update_ret =
+        hand_servo_update();
+
+
+    if (update_ret != HAL_OK)
+    {
+        action_in_progress = 0;
+        active_action = HAND_ACTION_NONE;
+    }
+
+
+    /* 3. 动作刚刚执行完成 */
+    if (action_in_progress &&
+        !hand_servo_is_busy())
+    {
+        char ack_msg[64];
+
+        snprintf(
+            ack_msg,
+            sizeof(ack_msg),
+            "ACTION:%s OK\r\n",
+            hand_action_to_ack_name(active_action));
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)ack_msg,
+            strlen(ack_msg),
+            100);
+
+        action_in_progress = 0;
+        active_action = HAND_ACTION_NONE;
+    }
+}
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+  
   /* USER CODE END 3 */
 }
 

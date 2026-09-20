@@ -30,12 +30,21 @@ static const uint16_t finger_max_angles[HAND_SERVO_NUM] =
 };
 
 /*
- * current_angles ºóÃæÐèÒª±»ÐÞ¸Ä£¬ËùÒÔ²»ÄÜÐ´ const
+ * current_angles ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Òªï¿½ï¿½ï¿½Þ¸Ä£ï¿½ï¿½ï¿½ï¿½Ô²ï¿½ï¿½ï¿½Ð´ const
  */
 static uint16_t current_angles[HAND_SERVO_NUM] =
 {
     90, 90, 90, 90, 90
 };
+
+static uint16_t target_angles[HAND_SERVO_NUM] =
+{
+    90, 90, 90, 90, 90
+};
+static hand_motion_state_t motion_state = HAND_MOTION_IDLE;
+
+static uint32_t last_move_tick=0;
+
 
 static const uint16_t hand_open_angles[HAND_SERVO_NUM] =
 {
@@ -73,7 +82,13 @@ static uint16_t hand_servo_limit_angle(uint8_t index, uint16_t angle)
 
     return angle;
 }
-
+static void hand_servo_set_target(const uint16_t angles[])
+{
+    for(uint8_t i=0;i<HAND_SERVO_NUM;i++)
+    {
+        target_angles[i]=hand_servo_limit_angle(i,angles[i]);
+    }
+}
 static HAL_StatusTypeDef hand_servo_move_one_smooth(uint8_t index, uint16_t target_angle)
 {
     if (index >= HAND_SERVO_NUM) {
@@ -84,7 +99,7 @@ static HAL_StatusTypeDef hand_servo_move_one_smooth(uint8_t index, uint16_t targ
     uint8_t channel = hand_servo_channels[index];
 
     /*
-     * ÕâÀïÊÇÏÞÖÆÄ¿±ê½Ç¶È£¬²»ÊÇ¸Ä³ÉÍ¨µÀºÅ
+     * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä¿ï¿½ï¿½Ç¶È£ï¿½ï¿½ï¿½ï¿½Ç¸Ä³ï¿½Í¨ï¿½ï¿½ï¿½ï¿½
      */
     target_angle = hand_servo_limit_angle(index, target_angle);
 
@@ -184,4 +199,158 @@ HAL_StatusTypeDef hand_servo_apply_action(hand_action_t action)
     default:
         return hand_servo_apply_angles(hand_stop_angles);
     }
+}
+HAL_StatusTypeDef hand_servo_start_action(
+    hand_action_t action)
+{
+    switch (action)
+    {
+    case HAND_ACTION_OPEN:
+
+        hand_servo_set_target(
+            hand_open_angles);
+
+        motion_state =
+            HAND_MOTION_OPENING;
+
+        break;
+
+
+    case HAND_ACTION_GRAB:
+
+        hand_servo_set_target(
+            hand_grab_angles);
+
+        motion_state =
+            HAND_MOTION_GRABBING;
+
+        break;
+
+
+    case HAND_ACTION_RELEASE:
+
+        hand_servo_set_target(
+            hand_release_angles);
+
+        motion_state =
+            HAND_MOTION_RELEASING;
+
+        break;
+
+
+    case HAND_ACTION_STOP:
+
+        hand_servo_set_target(
+            hand_stop_angles);
+
+        motion_state =
+            HAND_MOTION_STOPPING;
+
+        break;
+
+
+    case HAND_ACTION_NONE:
+    default:
+
+        return HAL_ERROR;
+    }
+
+
+    last_move_tick = HAL_GetTick();
+
+    return HAL_OK;
+}
+HAL_StatusTypeDef hand_servo_update(void)
+{
+    if(motion_state==HAND_MOTION_IDLE)
+    {
+        return HAL_OK;
+    }
+    if (motion_state == HAND_MOTION_FAULT)
+    {
+        return HAL_ERROR;
+    }
+    uint32_t now=HAL_GetTick();
+
+    if((now-last_move_tick)<SERVO_MOVE_DELAY_MS)
+    {
+        return HAL_OK;
+    }
+    last_move_tick=now;
+
+    uint8_t all_reached=1;
+
+    
+    for (uint8_t i = 0;
+         i < HAND_SERVO_NUM;
+         i++)
+    {
+        if (current_angles[i] <
+            target_angles[i])
+        {
+            all_reached = 0;
+
+            if ((target_angles[i] -
+                 current_angles[i]) >
+                SERVO_MOVE_STEP)
+            {
+                current_angles[i] +=
+                    SERVO_MOVE_STEP;
+            }
+            else
+            {
+                current_angles[i] =
+                    target_angles[i];
+            }
+        }
+        else if (current_angles[i] >
+                 target_angles[i])
+        {
+            all_reached = 0;
+
+            if ((current_angles[i] -
+                 target_angles[i]) >
+                SERVO_MOVE_STEP)
+            {
+                current_angles[i] -=
+                    SERVO_MOVE_STEP;
+            }
+            else
+            {
+                current_angles[i] =
+                    target_angles[i];
+            }
+        }
+
+
+        if (pca9685_set_servo_angle(
+                hand_servo_channels[i],
+                current_angles[i])
+            != HAL_OK)
+        {
+            motion_state =
+                HAND_MOTION_FAULT;
+
+            return HAL_ERROR;
+        }
+    }
+
+
+    if (all_reached)
+    {
+        motion_state =
+            HAND_MOTION_IDLE;
+    }
+
+
+    return HAL_OK;
+}
+uint8_t hand_servo_is_busy(void)
+{
+    return motion_state != HAND_MOTION_IDLE &&
+           motion_state != HAND_MOTION_FAULT;
+}
+hand_motion_state_t hand_servo_get_state(void)
+{
+    return motion_state;
 }
