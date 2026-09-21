@@ -129,9 +129,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
  while (1)
 {
-    /* 1. 有新命令，并且当前没有动作 */
-    if (hand_action_pending &&
-        !hand_servo_is_busy())
+   /*处理新命令*/
+    if (hand_action_pending)
     {
         hand_action_t action;
 
@@ -142,12 +141,34 @@ int main(void)
 
         __enable_irq();
 
-
-        if (hand_servo_start_action(action) == HAL_OK)
+        if(action==HAND_ACTION_NONE)
         {
-            active_action = action;
-            action_in_progress = 1;
+
         }
+
+        else if(action==HAND_ACTION_STOP)
+        {
+          if(hand_servo_start_action(HAND_ACTION_STOP)==HAL_OK)
+          {
+            active_action=HAND_ACTION_STOP;
+
+            action_in_progress;
+          }
+        }
+        
+        else if(!hand_servo_is_busy())
+        {
+          if(hand_servo_start_action(action)==HAL_OK)
+          {
+            active_action=action;
+            action_in_progress=1;
+          }
+        }
+        else 
+        {
+
+        }
+        
     }
 
 
