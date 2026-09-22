@@ -35,7 +35,116 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+  typedef enum
+  {
+    ACK_STATUS_NONE=0,
+    ACK_STATUS_IN_PROGRESS,
+    ACK_STATUS_OK,
+    ACK_STATUS_PREEMPTED,
+    ACK_STATUS_BUSY,
+    ACK_STATUS_ERROR
+  }ack_status_t;
 
+  #define ACK_CACHE_SIZE 4
+
+  typedef struct
+  {
+    uint8_t valid;
+    uint32_t seq;
+    ack_status_t status;
+  }ack_record_t;
+
+  static ack_record_t ack_cache[ACK_CACHE_SIZE];
+
+  static uint8_t ack_cache_next=0;
+
+  static const char *ack_status_to_string(
+    ack_status_t status)
+{
+    switch (status)
+    {
+    case ACK_STATUS_IN_PROGRESS:
+        return "IN_PROGRESS";
+
+    case ACK_STATUS_OK:
+        return "OK";
+
+    case ACK_STATUS_PREEMPTED:
+        return "PREEMPTED";
+
+    case ACK_STATUS_BUSY:
+        return "BUSY";
+
+    case ACK_STATUS_ERROR:
+        return "ERROR";
+
+    case ACK_STATUS_NONE:
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static ack_record_t *ack_cache_find(
+    uint32_t seq)
+{
+    for (uint8_t i = 0;
+         i < ACK_CACHE_SIZE;
+         i++)
+    {
+        if (ack_cache[i].valid &&
+            ack_cache[i].seq == seq)
+        {
+            return &ack_cache[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void ack_cache_set(
+    uint32_t seq,
+    ack_status_t status)
+{
+    ack_record_t *record =
+        ack_cache_find(seq);
+
+    if (record != NULL)
+    {
+        record->status = status;
+        return;
+    }
+
+    ack_cache[ack_cache_next].valid = 1;
+    ack_cache[ack_cache_next].seq = seq;
+    ack_cache[ack_cache_next].status = status;
+
+    ack_cache_next =
+        (ack_cache_next + 1) %
+        ACK_CACHE_SIZE;
+}
+static void send_ack(
+    uint32_t seq,
+    ack_status_t status)
+{
+    char buf[64];
+
+    int len =
+        snprintf(
+            buf,
+            sizeof(buf),
+            "ACK:%lu %s\r\n",
+            (unsigned long)seq,
+            ack_status_to_string(status));
+
+    if (len > 0)
+    {
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)buf,
+            strlen(buf),
+            100);
+    }
+}
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -62,9 +171,11 @@ uint8_t action_in_progress = 0;
 
 hand_action_t active_action =
     HAND_ACTION_NONE;
-volatile uint8_t hand_action_pending=0;
-volatile hand_action_t hand_pending_action=HAND_ACTION_NONE;
-
+// volatile uint8_t hand_action_pending=0;
+// volatile hand_action_t hand_pending_action=HAND_ACTION_NONE;
+char  uart_complete_line[UART_RX_BUF_SIZE];
+volatile uint8_t uart_line_ready=0;
+uint32_t active_seq=0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -127,83 +238,229 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
- while (1)
+while (1)
 {
-   /*处理新命令*/
-    if (hand_action_pending)
+    /* 1. 处理完整UART命令 */
+    if (uart_line_ready)
     {
-        hand_action_t action;
+        char line[UART_RX_BUF_SIZE];
 
         __disable_irq();
 
-        action = hand_pending_action;
-        hand_action_pending = 0;
+        memcpy(
+            line,
+            uart_complete_line,
+            sizeof(line));
+
+        uart_line_ready = 0;
 
         __enable_irq();
 
-        if(action==HAND_ACTION_NONE)
-        {
 
-        }
+        hand_command_t command;
 
-        else if(action==HAND_ACTION_STOP)
+        if (!hand_protocol_parse_frame(
+                line,
+                &command))
         {
-          if(hand_servo_start_action(HAND_ACTION_STOP)==HAL_OK)
-          {
-            active_action=HAND_ACTION_STOP;
+            char msg[] =
+                "ERR:INVALID_FRAME\r\n";
 
-            action_in_progress;
-          }
+            HAL_UART_Transmit(
+                &huart1,
+                (uint8_t *)msg,
+                strlen(msg),
+                100);
         }
-        
-        else if(!hand_servo_is_busy())
+        else
         {
-          if(hand_servo_start_action(action)==HAL_OK)
-          {
-            active_action=action;
-            action_in_progress=1;
-          }
-        }
-        else 
-        {
+            /*
+             * 2. 先查SEQ缓存
+             */
+            ack_record_t *old_record =
+                ack_cache_find(
+                    command.seq);
 
+            if (old_record != NULL)
+            {
+                /*
+                 * 重复SEQ：
+                 * 不重新执行动作，
+                 * 只重发缓存状态。
+                 */
+                send_ack(
+                    command.seq,
+                    old_record->status);
+            }
+
+            /*
+             * 3. STOP最高优先级
+             */
+            else if (
+                command.action ==
+                HAND_ACTION_STOP)
+            {
+                uint8_t had_active =
+                    action_in_progress;
+
+                uint32_t old_seq =
+                    active_seq;
+
+                if (hand_servo_start_action(
+                        HAND_ACTION_STOP)
+                    == HAL_OK)
+                {
+                    /*
+                     * STOP成功接管之后，
+                     * 原动作才正式标记PREEMPTED。
+                     */
+                    if (had_active)
+                    {
+                        ack_cache_set(
+                            old_seq,
+                            ACK_STATUS_PREEMPTED);
+
+                        send_ack(
+                            old_seq,
+                            ACK_STATUS_PREEMPTED);
+                    }
+
+                    active_seq =
+                        command.seq;
+
+                    active_action =
+                        HAND_ACTION_STOP;
+
+                    action_in_progress = 1;
+
+                    ack_cache_set(
+                        command.seq,
+                        ACK_STATUS_IN_PROGRESS);
+
+                    send_ack(
+                        command.seq,
+                        ACK_STATUS_IN_PROGRESS);
+                }
+                else
+                {
+                    ack_cache_set(
+                        command.seq,
+                        ACK_STATUS_ERROR);
+
+                    send_ack(
+                        command.seq,
+                        ACK_STATUS_ERROR);
+                }
+            }
+
+            /*
+             * 4. 普通动作：
+             * 只有空闲时允许启动
+             */
+            else if (!hand_servo_is_busy())
+            {
+                if (hand_servo_start_action(
+                        command.action)
+                    == HAL_OK)
+                {
+                    active_seq =
+                        command.seq;
+
+                    active_action =
+                        command.action;
+
+                    action_in_progress = 1;
+
+                    ack_cache_set(
+                        command.seq,
+                        ACK_STATUS_IN_PROGRESS);
+
+                    send_ack(
+                        command.seq,
+                        ACK_STATUS_IN_PROGRESS);
+                }
+                else
+                {
+                    ack_cache_set(
+                        command.seq,
+                        ACK_STATUS_ERROR);
+
+                    send_ack(
+                        command.seq,
+                        ACK_STATUS_ERROR);
+                }
+            }
+
+            /*
+             * 5. 当前busy，
+             * 普通动作拒绝
+             */
+            else
+            {
+                ack_cache_set(
+                    command.seq,
+                    ACK_STATUS_BUSY);
+
+                send_ack(
+                    command.seq,
+                    ACK_STATUS_BUSY);
+            }
         }
-        
     }
 
 
-    /* 2. 每一次主循环都必须推进状态机 */
+    /*
+     * 6. 每次主循环继续推进非阻塞状态机
+     */
     HAL_StatusTypeDef update_ret =
         hand_servo_update();
 
 
+    /*
+     * 7. 执行发生错误
+     */
     if (update_ret != HAL_OK)
     {
+        if (action_in_progress)
+        {
+            ack_cache_set(
+                active_seq,
+                ACK_STATUS_ERROR);
+
+            send_ack(
+                active_seq,
+                ACK_STATUS_ERROR);
+        }
+
         action_in_progress = 0;
-        active_action = HAND_ACTION_NONE;
+
+        active_action =
+            HAND_ACTION_NONE;
+
+        active_seq = 0;
     }
 
 
-    /* 3. 动作刚刚执行完成 */
+    /*
+     * 8. 当前动作完成
+     */
     if (action_in_progress &&
         !hand_servo_is_busy())
     {
-        char ack_msg[64];
+        ack_cache_set(
+            active_seq,
+            ACK_STATUS_OK);
 
-        snprintf(
-            ack_msg,
-            sizeof(ack_msg),
-            "ACTION:%s OK\r\n",
-            hand_action_to_ack_name(active_action));
-
-        HAL_UART_Transmit(
-            &huart1,
-            (uint8_t *)ack_msg,
-            strlen(ack_msg),
-            100);
+        send_ack(
+            active_seq,
+            ACK_STATUS_OK);
 
         action_in_progress = 0;
-        active_action = HAND_ACTION_NONE;
+
+        active_action =
+            HAND_ACTION_NONE;
+
+        active_seq = 0;
     }
 }
 
@@ -256,49 +513,70 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-static const char * hand_action_to_ack_name(hand_action_t action)
-{
-	switch(action){
-		case	HAND_ACTION_OPEN:
-			return "HAND_OPEN";
-		
-		case	HAND_ACTION_GRAB:
-			return "HAND_GRAB";
+// static const char * hand_action_to_ack_name(hand_action_t action)
+// {
+// 	switch(action){
+// 		case	HAND_ACTION_OPEN:
+// 			return "HAND_OPEN";
+  
+// 		case	HAND_ACTION_GRAB:
+// 			return "HAND_GRAB";
 				
-		case	HAND_ACTION_RELEASE:
-			return "HAND_RELEASE";
+// 		case	HAND_ACTION_RELEASE:
+// 			return "HAND_RELEASE";
 						
-		case	HAND_ACTION_STOP:
-			return "HAND_STOP";
+// 		case	HAND_ACTION_STOP:
+// 			return "HAND_STOP";
 								
-		case	HAND_ACTION_NONE:
-		default:
-			return "HAND_NONE";
-	}
-}		
+// 		case	HAND_ACTION_NONE:
+// 		default:
+// 			return "HAND_NONE";
+// 	}
+// }		
 
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+void HAL_UART_RxCpltCallback(
+    UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == USART1) {
-        if (uart_rx_byte == '\n') {
-            uart_line_buf[uart_line_index] = '\0';
+    if (huart->Instance == USART1)
+    {
+        if (uart_rx_byte == '\n')
+        {
+            uart_line_buf[
+                uart_line_index] = '\0';
 
-            if (uart_line_index > 0) {
-                hand_pending_action = hand_protocol_parse(uart_line_buf);
-                hand_action_pending = 1;
+            if (uart_line_index > 0 &&
+                !uart_line_ready)
+            {
+                memcpy(
+                    uart_complete_line,
+                    uart_line_buf,
+                    uart_line_index + 1);
+
+                uart_line_ready = 1;
             }
 
             uart_line_index = 0;
-        } else if (uart_rx_byte != '\r') {
-            if (uart_line_index < UART_RX_BUF_SIZE - 1) {
-                uart_line_buf[uart_line_index++] = uart_rx_byte;
-            } else {
+        }
+
+        else if (uart_rx_byte != '\r')
+        {
+            if (uart_line_index <
+                UART_RX_BUF_SIZE - 1)
+            {
+                uart_line_buf[
+                    uart_line_index++] =
+                    uart_rx_byte;
+            }
+            else
+            {
                 uart_line_index = 0;
             }
         }
 
-        HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1);
+        HAL_UART_Receive_IT(
+            &huart1,
+            &uart_rx_byte,
+            1);
     }
 }
 /* USER CODE END 4 */

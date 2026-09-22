@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 hand_action_t hand_protocol_parse(const char *cmd)
 {
@@ -68,4 +69,39 @@ switch (action)
        printf("ACTION: no valid command\r\n");
         break;
     }
+}
+bool hand_protocol_parse_frame(const char*line, hand_command_t*command)
+{
+    if(line==NULL||command==NULL)
+    {
+        return false;
+    }
+    if(strncmp(line,"SEQ:",4)!=0)
+    {
+        return false;           
+    }
+    char *end_ptr=NULL;
+
+    unsigned long seq=strtoul(line+4,&end_ptr,10);
+
+    if(end_ptr==line+4)
+    {
+        return false;
+    }
+    if(strncmp(end_ptr," CMD:",5)!=0)
+    {
+        return false;
+    }
+    const char *cmd_text=end_ptr+5;
+
+    hand_action_t action=hand_protocol_parse(cmd_text);
+
+    if(action==HAND_ACTION_NONE)
+    {
+        return false;
+    }
+    command->seq=(uint32_t)seq;
+    command->action=action;
+    
+    return true;
 }
