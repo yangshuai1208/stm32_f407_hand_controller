@@ -18,3 +18,17 @@ I2C1
 PCA9685
     ↓ 5路PWM
 MG90S × 5
+
+
+### Day07：USART1 DMA/IDLE接收升级
+
+将原单字节UART中断接收升级为Circular DMA + IDLE接收。
+
+- DMA2 Stream2 / Channel4。
+- 256字节DMA接收缓冲区。
+- 512字节软件环形缓冲区。
+- 根据DMA接收位置提取新增数据并处理回绕。
+- 主循环解析以换行符结束的ASCII协议。
+- 保留SEQ去重、ACK缓存及STOP抢占逻辑。
+
+验证状态：Keil Rebuild成功，实机通信测试安排在Day08。
