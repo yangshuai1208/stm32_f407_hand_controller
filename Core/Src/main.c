@@ -48,12 +48,13 @@
 
   #define ACK_CACHE_SIZE 4
 
-  typedef struct
-  {
+typedef struct
+{
     uint8_t valid;
     uint32_t seq;
+    hand_action_t action;
     ack_status_t status;
-  }ack_record_t;
+} ack_record_t;
 
   static ack_record_t ack_cache[ACK_CACHE_SIZE];
 
@@ -104,11 +105,12 @@ static ack_record_t *ack_cache_find(
 
 static void ack_cache_set(
     uint32_t seq,
+    hand_action_t action,
     ack_status_t status)
 {
-    ack_record_t *record =
-        ack_cache_find(seq);
+    ack_record_t *record = ack_cache_find(seq);
 
+   
     if (record != NULL)
     {
         record->status = status;
@@ -117,11 +119,11 @@ static void ack_cache_set(
 
     ack_cache[ack_cache_next].valid = 1;
     ack_cache[ack_cache_next].seq = seq;
+    ack_cache[ack_cache_next].action = action;
     ack_cache[ack_cache_next].status = status;
 
     ack_cache_next =
-        (ack_cache_next + 1) %
-        ACK_CACHE_SIZE;
+        (ack_cache_next + 1U) % ACK_CACHE_SIZE;
 }
 static void send_ack(
     uint32_t seq,
@@ -484,17 +486,28 @@ while (1)
                 ack_cache_find(
                     command.seq);
 
-            if (old_record != NULL)
-            {
-                /*
-                 * 重复SEQ：
-                 * 不重新执行动作，
-                 * 只重发缓存状态。
-                 */
-                send_ack(
-                    command.seq,
-                    old_record->status);
-            }
+       if (old_record != NULL)
+    {
+ 
+        if (old_record->action != command.action)
+        {
+            const char msg[] =
+            "ERR:SEQ_CONFLICT\r\n";
+
+            HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1U,
+            100);
+        }
+    else
+    {
+      
+        send_ack(
+            command.seq,
+            old_record->status);
+    }
+    }
 
             /*
              * 3. STOP最高优先级
@@ -503,11 +516,11 @@ while (1)
                 command.action ==
                 HAND_ACTION_STOP)
             {
-                uint8_t had_active =
-                    action_in_progress;
+                uint8_t had_active =action_in_progress;
 
-                uint32_t old_seq =
-                    active_seq;
+                uint32_t old_seq =active_seq;
+
+                hand_action_t old_action = active_action;
 
                 if (hand_servo_start_action(
                         HAND_ACTION_STOP)
@@ -519,9 +532,7 @@ while (1)
                      */
                     if (had_active)
                     {
-                        ack_cache_set(
-                            old_seq,
-                            ACK_STATUS_PREEMPTED);
+                       ack_cache_set(old_seq,old_action,ACK_STATUS_PREEMPTED);
 
                         send_ack(
                             old_seq,
@@ -536,9 +547,7 @@ while (1)
 
                     action_in_progress = 1;
 
-                    ack_cache_set(
-                        command.seq,
-                        ACK_STATUS_IN_PROGRESS);
+                ack_cache_set(command.seq,command.action,ACK_STATUS_IN_PROGRESS);
 
                     send_ack(
                         command.seq,
@@ -546,9 +555,7 @@ while (1)
                 }
                 else
                 {
-                    ack_cache_set(
-                        command.seq,
-                        ACK_STATUS_ERROR);
+                  ack_cache_set(command.seq,command.action,ACK_STATUS_ERROR);
 
                     send_ack(
                         command.seq,
@@ -574,19 +581,14 @@ while (1)
 
                     action_in_progress = 1;
 
-                    ack_cache_set(
-                        command.seq,
-                        ACK_STATUS_IN_PROGRESS);
-
+                  ack_cache_set(command.seq,command.action,ACK_STATUS_IN_PROGRESS);
                     send_ack(
                         command.seq,
                         ACK_STATUS_IN_PROGRESS);
                 }
                 else
                 {
-                    ack_cache_set(
-                        command.seq,
-                        ACK_STATUS_ERROR);
+            ack_cache_set(command.seq,command.action,ACK_STATUS_ERROR);
 
                     send_ack(
                         command.seq,
@@ -600,9 +602,7 @@ while (1)
              */
             else
             {
-                ack_cache_set(
-                    command.seq,
-                    ACK_STATUS_BUSY);
+            ack_cache_set(command.seq,command.action,ACK_STATUS_BUSY);
 
                 send_ack(
                     command.seq,
@@ -626,9 +626,7 @@ while (1)
     {
         if (action_in_progress)
         {
-            ack_cache_set(
-                active_seq,
-                ACK_STATUS_ERROR);
+        ack_cache_set(active_seq,active_action, ACK_STATUS_ERROR);
 
             send_ack(
                 active_seq,
@@ -650,9 +648,7 @@ while (1)
     if (action_in_progress &&
         !hand_servo_is_busy())
     {
-        ack_cache_set(
-            active_seq,
-            ACK_STATUS_OK);
+        ack_cache_set(active_seq,active_action,ACK_STATUS_OK);
 
         send_ack(
             active_seq,

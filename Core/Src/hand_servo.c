@@ -260,91 +260,107 @@ HAL_StatusTypeDef hand_servo_start_action(
 
     return HAL_OK;
 }
+
 HAL_StatusTypeDef hand_servo_update(void)
 {
-    if(motion_state==HAND_MOTION_IDLE)
+    /* 1. 空闲状态，无需继续更新 */
+    if (motion_state == HAND_MOTION_IDLE)
     {
         return HAL_OK;
     }
+
+    /* 2. 故障状态，不继续发送运动命令 */
     if (motion_state == HAND_MOTION_FAULT)
     {
         return HAL_ERROR;
     }
-    uint32_t now=HAL_GetTick();
 
-    if((now-last_move_tick)<SERVO_MOVE_DELAY_MS)
+    uint32_t now = HAL_GetTick();
+
+    /* 3. 按规定时间间隔推进动作 */
+    if ((uint32_t)(now - last_move_tick) <
+        SERVO_MOVE_DELAY_MS)
     {
         return HAL_OK;
     }
-    last_move_tick=now;
 
-    uint8_t all_reached=1;
+    last_move_tick = now;
 
-    
-    for (uint8_t i = 0;
-         i < HAND_SERVO_NUM;
-         i++)
+    uint8_t all_reached = 1;
+
+    /* 4. 遍历五个手指 */
+    for (uint8_t i = 0; i < HAND_SERVO_NUM; i++)
     {
-        if (current_angles[i] <
-            target_angles[i])
-        {
-            all_reached = 0;
+        uint16_t next_angle = current_angles[i];
+        uint16_t target = target_angles[i];
 
-            if ((target_angles[i] -
-                 current_angles[i]) >
-                SERVO_MOVE_STEP)
+        /* 5. 向目标角度递增 */
+        if (next_angle < target)
+        {
+            uint16_t diff = target - next_angle;
+
+            if (diff > SERVO_MOVE_STEP)
             {
-                current_angles[i] +=
-                    SERVO_MOVE_STEP;
+                next_angle += SERVO_MOVE_STEP;
             }
             else
             {
-                current_angles[i] =
-                    target_angles[i];
+                next_angle = target;
             }
         }
-        else if (current_angles[i] >
-                 target_angles[i])
-        {
-            all_reached = 0;
 
-            if ((current_angles[i] -
-                 target_angles[i]) >
-                SERVO_MOVE_STEP)
+        /* 6. 向目标角度递减 */
+        else if (next_angle > target)
+        {
+            uint16_t diff = next_angle - target;
+
+            if (diff > SERVO_MOVE_STEP)
             {
-                current_angles[i] -=
-                    SERVO_MOVE_STEP;
+                next_angle -= SERVO_MOVE_STEP;
             }
             else
             {
-                current_angles[i] =
-                    target_angles[i];
+                next_angle = target;
             }
         }
 
-
-        if (pca9685_set_servo_angle(
-                hand_servo_channels[i],
-                current_angles[i])
-            != HAL_OK)
+        /*
+         * 7. 角度确实变化时才写入PCA9685。
+         *    不再每轮无条件写入全部通道。
+         */
+        if (next_angle != current_angles[i])
         {
-            motion_state =
-                HAND_MOTION_FAULT;
+            HAL_StatusTypeDef ret =
+                pca9685_set_servo_angle(
+                    hand_servo_channels[i],
+                    next_angle);
 
-            return HAL_ERROR;
+            if (ret != HAL_OK)
+            {
+                motion_state = HAND_MOTION_FAULT;
+                return HAL_ERROR;
+            }
+
+            /* 写入成功后更新软件记录 */
+            current_angles[i] = next_angle;
+        }
+
+        /* 8. 检查本轮更新后是否到达目标 */
+        if (current_angles[i] != target)
+        {
+            all_reached = 0;
         }
     }
 
-
+    /* 9. 五个手指均到达目标 */
     if (all_reached)
     {
-        motion_state =
-            HAND_MOTION_IDLE;
+        motion_state = HAND_MOTION_IDLE;
     }
-
 
     return HAL_OK;
 }
+
 uint8_t hand_servo_is_busy(void)
 {
     return motion_state != HAND_MOTION_IDLE &&
