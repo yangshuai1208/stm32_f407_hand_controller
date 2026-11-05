@@ -203,6 +203,12 @@ HAL_StatusTypeDef hand_servo_apply_action(hand_action_t action)
 HAL_StatusTypeDef hand_servo_start_action(
     hand_action_t action)
 {
+    if (motion_state == HAND_MOTION_FAULT &&
+        action != HAND_ACTION_STOP)
+    {
+        return HAL_ERROR;
+    }
+
     switch (action)
     {
     case HAND_ACTION_OPEN:
@@ -241,10 +247,13 @@ HAL_StatusTypeDef hand_servo_start_action(
     case HAND_ACTION_STOP:
 
         hand_servo_set_target(
-            hand_stop_angles);
+            current_angles);
 
-        motion_state =
-            HAND_MOTION_STOPPING;
+        if (motion_state != HAND_MOTION_FAULT)
+        {
+            motion_state =
+                HAND_MOTION_IDLE;
+        }
 
         break;
 

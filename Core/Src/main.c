@@ -480,8 +480,36 @@ while (1)
         else
         {
             /*
-             * 2. 先查SEQ缓存
+             * 2. 先检查活动SEQ，再查缓存
              */
+            uint8_t active_seq_handled = 0;
+
+            if (action_in_progress &&
+                command.seq == active_seq)
+            {
+                if (command.action != active_action)
+                {
+                    const char msg[] =
+                        "ERR:SEQ_CONFLICT\r\n";
+
+                    HAL_UART_Transmit(
+                        &huart1,
+                        (uint8_t *)msg,
+                        sizeof(msg) - 1U,
+                        100);
+                }
+                else
+                {
+                    send_ack(
+                        command.seq,
+                        ACK_STATUS_IN_PROGRESS);
+                }
+
+                active_seq_handled = 1;
+            }
+
+            if (!active_seq_handled)
+            {
             ack_record_t *old_record =
                 ack_cache_find(
                     command.seq);
@@ -526,6 +554,11 @@ while (1)
                         HAND_ACTION_STOP)
                     == HAL_OK)
                 {
+                    ack_cache_set(
+                        command.seq,
+                        command.action,
+                        ACK_STATUS_OK);
+
                     /*
                      * STOP成功接管之后，
                      * 原动作才正式标记PREEMPTED。
@@ -540,18 +573,16 @@ while (1)
                     }
 
                     active_seq =
-                        command.seq;
+                        0;
 
                     active_action =
-                        HAND_ACTION_STOP;
+                        HAND_ACTION_NONE;
 
-                    action_in_progress = 1;
-
-                ack_cache_set(command.seq,command.action,ACK_STATUS_IN_PROGRESS);
+                    action_in_progress = 0;
 
                     send_ack(
                         command.seq,
-                        ACK_STATUS_IN_PROGRESS);
+                        ACK_STATUS_OK);
                 }
                 else
                 {
@@ -615,6 +646,8 @@ while (1)
     /*
      * 6. 每次主循环继续推进非阻塞状态机
      */
+            }
+
     HAL_StatusTypeDef update_ret =
         hand_servo_update();
 
