@@ -293,8 +293,6 @@ HAL_StatusTypeDef hand_servo_update(void)
         return HAL_OK;
     }
 
-    last_move_tick = now;
-
     uint8_t all_reached = 1;
 
     /* 4. 遍历五个手指 */
@@ -362,6 +360,8 @@ HAL_StatusTypeDef hand_servo_update(void)
     }
 
     /* 9. 五个手指均到达目标 */
+    last_move_tick = HAL_GetTick();
+
     if (all_reached)
     {
         motion_state = HAND_MOTION_IDLE;
