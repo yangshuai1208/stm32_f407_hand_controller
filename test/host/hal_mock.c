@@ -1,6 +1,7 @@
 #include "stm32f4xx_hal.h"
 
 static uint32_t fake_tick;
+static uint32_t fake_primask;
 static uint32_t i2c_write_count;
 static uint32_t i2c_write_duration_ms;
 static uint8_t fail_next_i2c_write;
@@ -8,9 +9,30 @@ static uint8_t fail_next_i2c_write;
 void hal_mock_reset(void)
 {
     fake_tick = 0U;
+    fake_primask = 0U;
     i2c_write_count = 0U;
     i2c_write_duration_ms = 0U;
     fail_next_i2c_write = 0U;
+}
+
+uint32_t hal_mock_get_primask(void)
+{
+    return fake_primask;
+}
+
+void hal_mock_disable_irq(void)
+{
+    fake_primask = 1U;
+}
+
+void hal_mock_enable_irq(void)
+{
+    fake_primask = 0U;
+}
+
+void hal_mock_set_primask(uint32_t primask)
+{
+    fake_primask = (primask != 0U) ? 1U : 0U;
 }
 
 void hal_mock_set_tick(uint32_t tick)

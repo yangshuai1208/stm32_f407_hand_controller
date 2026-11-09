@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "hand_protocol.h"
 #include "hand_servo.h"
+#include "uart_line.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -163,9 +164,7 @@ static void send_ack(
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-#define UART_RX_BUF_SIZE       64U
 #define UART_DMA_RX_BUF_SIZE  256U
-#define UART_SW_RING_SIZE     512U
 
 /* DMA直接写入的缓冲区 */
 static uint8_t dma_rx_buf[UART_DMA_RX_BUF_SIZE];
@@ -173,19 +172,8 @@ static uint8_t dma_rx_buf[UART_DMA_RX_BUF_SIZE];
 /* 上一次已经处理到的DMA位置 */
 static uint16_t dma_old_pos = 0;
 
-/* 软件环形缓冲区 */
-static uint8_t uart_ring[UART_SW_RING_SIZE];
-
-static volatile uint16_t uart_ring_head = 0;
-static volatile uint16_t uart_ring_tail = 0;
-
-static volatile uint8_t uart_rx_overflow = 0;
-
-/* 主循环解析ASCII行协议 */
-static char uart_line_buf[UART_RX_BUF_SIZE];
-
-static uint8_t uart_line_index = 0;
-static uint8_t uart_line_discard = 0;
+/* UART 软件缓冲和组帧状态由 uart_line 模块管理。 */
+static uart_line_rx_t uart_line_rx;
 
 
 uint8_t action_in_progress = 0;
@@ -208,63 +196,11 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void uart_ring_push_isr(uint8_t byte)
-{
-    if (uart_rx_overflow)
-    {
-        return;
-    }
-
-    uint16_t next =
-        (uart_ring_head + 1U) %
-        UART_SW_RING_SIZE;
-
-    if (next == uart_ring_tail)
-    {
-        uart_rx_overflow = 1;
-        return;
-    }
-
-    uart_ring[uart_ring_head] = byte;
-
-    uart_ring_head = next;
-}
-static uint8_t uart_ring_pop(uint8_t *byte)
-{
-    if (byte == NULL)
-    {
-        return 0;
-    }
-
-    uint8_t has_data = 0;
-
-    uint32_t primask = __get_PRIMASK();
-
-    __disable_irq();
-
-    if (uart_ring_tail != uart_ring_head)
-    {
-        *byte = uart_ring[uart_ring_tail];
-
-        uart_ring_tail =
-            (uart_ring_tail + 1U) %
-            UART_SW_RING_SIZE;
-
-        has_data = 1;
-    }
-
-    if (primask == 0U)
-    {
-        __enable_irq();
-    }
-
-    return has_data;
-}
 static void uart_dma_collect(uint16_t pos)
 {
     if (pos > UART_DMA_RX_BUF_SIZE)
     {
-        uart_rx_overflow = 1;
+        uart_line_rx_mark_overflow_isr(&uart_line_rx);
         return;
     }
 
@@ -278,7 +214,7 @@ static void uart_dma_collect(uint16_t pos)
     {
         for (uint16_t i = old; i < pos; i++)
         {
-            uart_ring_push_isr(dma_rx_buf[i]);
+            uart_line_rx_push_isr(&uart_line_rx, dma_rx_buf[i]);
         }
     }
 
@@ -292,12 +228,12 @@ static void uart_dma_collect(uint16_t pos)
              i < UART_DMA_RX_BUF_SIZE;
              i++)
         {
-            uart_ring_push_isr(dma_rx_buf[i]);
+            uart_line_rx_push_isr(&uart_line_rx, dma_rx_buf[i]);
         }
 
         for (uint16_t i = 0; i < pos; i++)
         {
-            uart_ring_push_isr(dma_rx_buf[i]);
+            uart_line_rx_push_isr(&uart_line_rx, dma_rx_buf[i]);
         }
     }
 
@@ -309,68 +245,6 @@ static void uart_dma_collect(uint16_t pos)
         (pos == UART_DMA_RX_BUF_SIZE)
         ? 0U
         : pos;
-}
-
-static uint8_t uart_poll_line(
-    char out[UART_RX_BUF_SIZE])
-{
-    uint8_t byte;
-
-    if (!uart_ring_pop(&byte))
-    {
-        return 0;
-    }
-
-    /*
-     * 一行接收完成
-     */
-    if (byte == '\n')
-    {
-        uint8_t valid =
-            !uart_line_discard &&
-            uart_line_index > 0;
-
-        if (valid)
-        {
-            uart_line_buf[uart_line_index] = '\0';
-
-            memcpy(
-                out,
-                uart_line_buf,
-                uart_line_index + 1U);
-        }
-
-        uart_line_index = 0;
-        uart_line_discard = 0;
-
-        return valid;
-    }
-
-    /* 忽略回车 */
-    if (byte == '\r')
-    {
-        return 0;
-    }
-
-    /*
-     * 行过长时丢弃到下一个换行符，
-     * 避免把残缺数据当成新命令。
-     */
-    if (!uart_line_discard)
-    {
-        if (uart_line_index <
-            UART_RX_BUF_SIZE - 1U)
-        {
-            uart_line_buf[uart_line_index++] =
-                (char)byte;
-        }
-        else
-        {
-            uart_line_discard = 1;
-        }
-    }
-
-    return 0;
 }
 
 /* USER CODE END 0 */
@@ -408,6 +282,7 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  uart_line_rx_init(&uart_line_rx);
 	if(hand_servo_init(&hi2c1)==HAL_OK)
 	{
 		char msg[]="PCA9685 init OK\r\n";
@@ -432,33 +307,15 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 while (1)
 {
-	if (uart_rx_overflow)
-	{
-    uint32_t primask = __get_PRIMASK();
-
-    __disable_irq();
-
-    uart_ring_tail = uart_ring_head;
-    uart_rx_overflow = 0;
-
-    if (primask == 0U)
+    if (uart_line_rx_has_overflow(&uart_line_rx))
     {
-        __enable_irq();
+        uart_line_rx_recover_overflow(&uart_line_rx);
     }
 
-    uart_line_index = 0;
-
-    /*
-     * 丢弃至下一个换行符，
-     * 防止将残缺数据当作有效命令。
-     */
-    uart_line_discard = 1;
-	}
-
     /* 1. 处理完整UART命令 */
-  char line[UART_RX_BUF_SIZE];
+  char line[UART_LINE_BUFFER_SIZE];
 
-	if (uart_poll_line(line))
+	if (uart_line_rx_poll(&uart_line_rx, line))
 		 {
 			hand_command_t command;
 

@@ -21,6 +21,14 @@ typedef struct
 
 uint32_t HAL_GetTick(void);
 void HAL_Delay(uint32_t Delay);
+uint32_t hal_mock_get_primask(void);
+void hal_mock_disable_irq(void);
+void hal_mock_enable_irq(void);
+
+#define __get_PRIMASK() hal_mock_get_primask()
+#define __disable_irq() hal_mock_disable_irq()
+#define __enable_irq() hal_mock_enable_irq()
+
 HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *hi2c,
                                     uint16_t DevAddress,
                                     uint16_t MemAddress,
