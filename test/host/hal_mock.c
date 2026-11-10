@@ -5,6 +5,11 @@ static uint32_t fake_primask;
 static uint32_t i2c_write_count;
 static uint32_t i2c_write_duration_ms;
 static uint8_t fail_next_i2c_write;
+static HAL_StatusTypeDef uart_abort_result;
+static HAL_StatusTypeDef uart_start_result;
+static uint32_t uart_abort_count;
+static uint32_t uart_start_count;
+static uint32_t uart_clear_overrun_count;
 
 void hal_mock_reset(void)
 {
@@ -13,6 +18,48 @@ void hal_mock_reset(void)
     i2c_write_count = 0U;
     i2c_write_duration_ms = 0U;
     fail_next_i2c_write = 0U;
+    uart_abort_result = HAL_OK;
+    uart_start_result = HAL_OK;
+    uart_abort_count = 0U;
+    uart_start_count = 0U;
+    uart_clear_overrun_count = 0U;
+}
+
+void hal_mock_uart_clear_overrun(UART_HandleTypeDef *huart)
+{
+    if (huart != NULL && huart->Instance != NULL)
+    {
+        (void)huart->Instance->SR;
+        (void)huart->Instance->DR;
+        huart->Instance->SR = 0U;
+        huart->Instance->DR = 0U;
+        uart_clear_overrun_count++;
+    }
+}
+
+uint32_t hal_mock_uart_clear_overrun_count(void)
+{
+    return uart_clear_overrun_count;
+}
+
+void hal_mock_uart_set_abort_result(HAL_StatusTypeDef result)
+{
+    uart_abort_result = result;
+}
+
+void hal_mock_uart_set_start_result(HAL_StatusTypeDef result)
+{
+    uart_start_result = result;
+}
+
+uint32_t hal_mock_uart_abort_count(void)
+{
+    return uart_abort_count;
+}
+
+uint32_t hal_mock_uart_start_count(void)
+{
+    return uart_start_count;
 }
 
 uint32_t hal_mock_get_primask(void)
@@ -101,4 +148,42 @@ HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *hi2c,
     }
 
     return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *huart)
+{
+    uart_abort_count++;
+
+    if (uart_abort_result == HAL_OK)
+    {
+        huart->RxState = HAL_UART_STATE_READY;
+        huart->ReceptionType = HAL_UART_RECEPTION_STANDARD;
+        if (huart->hdmarx != NULL)
+        {
+            huart->hdmarx->State = HAL_DMA_STATE_READY;
+        }
+    }
+
+    return uart_abort_result;
+}
+
+HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *huart,
+                                               uint8_t *pData,
+                                               uint16_t Size)
+{
+    (void)pData;
+    (void)Size;
+    uart_start_count++;
+
+    if (uart_start_result == HAL_OK)
+    {
+        huart->RxState = HAL_UART_STATE_BUSY_RX;
+        huart->ReceptionType = HAL_UART_RECEPTION_TOIDLE;
+        if (huart->hdmarx != NULL)
+        {
+            huart->hdmarx->State = HAL_DMA_STATE_BUSY;
+        }
+    }
+
+    return uart_start_result;
 }

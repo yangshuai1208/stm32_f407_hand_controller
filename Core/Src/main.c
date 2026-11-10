@@ -27,7 +27,9 @@
 /* USER CODE BEGIN Includes */
 #include "hand_protocol.h"
 #include "hand_servo.h"
+#include "uart_dma_rx.h"
 #include "uart_line.h"
+#include "uart_rx_recovery.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -164,16 +166,13 @@ static void send_ack(
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-#define UART_DMA_RX_BUF_SIZE  256U
-
 /* DMA直接写入的缓冲区 */
 static uint8_t dma_rx_buf[UART_DMA_RX_BUF_SIZE];
 
-/* 上一次已经处理到的DMA位置 */
-static uint16_t dma_old_pos = 0;
-
-/* UART 软件缓冲和组帧状态由 uart_line 模块管理。 */
+/* UART DMA位置和软件队列/组帧状态由独立生产模块管理。 */
+static uart_dma_rx_t uart_dma_rx;
 static uart_line_rx_t uart_line_rx;
+static uart_rx_recovery_t uart_rx_recovery;
 
 
 uint8_t action_in_progress = 0;
@@ -196,57 +195,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void uart_dma_collect(uint16_t pos)
-{
-    if (pos > UART_DMA_RX_BUF_SIZE)
-    {
-        uart_line_rx_mark_overflow_isr(&uart_line_rx);
-        return;
-    }
-
-    uint16_t old = dma_old_pos;
-
-    /*
-     * 情况1：
-     * DMA写入位置没有回绕
-     */
-    if (pos > old)
-    {
-        for (uint16_t i = old; i < pos; i++)
-        {
-            uart_line_rx_push_isr(&uart_line_rx, dma_rx_buf[i]);
-        }
-    }
-
-    /*
-     * 情况2：
-     * DMA写入位置已经回绕
-     */
-    else if (pos < old)
-    {
-        for (uint16_t i = old;
-             i < UART_DMA_RX_BUF_SIZE;
-             i++)
-        {
-            uart_line_rx_push_isr(&uart_line_rx, dma_rx_buf[i]);
-        }
-
-        for (uint16_t i = 0; i < pos; i++)
-        {
-            uart_line_rx_push_isr(&uart_line_rx, dma_rx_buf[i]);
-        }
-    }
-
-    /*
-     * Size可能等于整个DMA缓冲区大小。
-     * 处理完后归一化到0。
-     */
-    dma_old_pos =
-        (pos == UART_DMA_RX_BUF_SIZE)
-        ? 0U
-        : pos;
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -282,7 +230,10 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+	 uart_dma_rx_init(&uart_dma_rx);
   uart_line_rx_init(&uart_line_rx);
+  uart_rx_recovery_init(&uart_rx_recovery);
+
 	if(hand_servo_init(&hi2c1)==HAL_OK)
 	{
 		char msg[]="PCA9685 init OK\r\n";
@@ -293,12 +244,20 @@ int main(void)
 		char msg[]="PCA9685 init FAIL\r\n";
 		HAL_UART_Transmit(&huart1,(uint8_t*)msg,strlen(msg),100);
 	}
-	if (HAL_UARTEx_ReceiveToIdle_DMA(
+	HAL_StatusTypeDef uart_start_status = HAL_UARTEx_ReceiveToIdle_DMA(
         &huart1,
         dma_rx_buf,
-        UART_DMA_RX_BUF_SIZE) != HAL_OK)
+		UART_DMA_RX_BUF_SIZE);
+	if (uart_start_status == HAL_OK)
 	{
-    Error_Handler();
+		uart_rx_recovery_mark_started(&uart_rx_recovery);
+	}
+	else
+	{
+		/* 模块没有初次启动失败入口，将状态置为待恢复并由服务重试。 */
+		uart_rx_recovery.state = UART_RX_RECOVERY_WAIT_DMA;
+		uart_rx_recovery.last_failure = UART_RX_FAILURE_START;
+		uart_rx_recovery.state_tick = HAL_GetTick();
 	}
 
   /* USER CODE END 2 */
@@ -307,15 +266,26 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 while (1)
 {
-    if (uart_line_rx_has_overflow(&uart_line_rx))
-    {
-        uart_line_rx_recover_overflow(&uart_line_rx);
-    }
+	/* Sole main-loop owner of DMA abort/restart; call once per iteration. */
+	uart_rx_recovery_service(
+		&uart_rx_recovery,
+		&huart1,
+		dma_rx_buf,
+		&uart_dma_rx,
+		&uart_line_rx);
+
+	if (uart_rx_recovery_commands_allowed(&uart_rx_recovery))
+	{
+	if (uart_line_rx_has_overflow(&uart_line_rx))
+	{
+    uart_line_rx_recover_overflow(&uart_line_rx);
+	}
 
     /* 1. 处理完整UART命令 */
   char line[UART_LINE_BUFFER_SIZE];
 
-	if (uart_line_rx_poll(&uart_line_rx, line))
+	if (uart_line_rx_poll(&uart_line_rx, line) &&
+	    uart_rx_recovery_commands_allowed(&uart_rx_recovery))
 		 {
 			hand_command_t command;
 
@@ -499,6 +469,7 @@ while (1)
         }
     }
 
+	}
 
     /*
      * 6. 每次主循环继续推进非阻塞状态机
@@ -514,6 +485,7 @@ while (1)
      */
     if (update_ret != HAL_OK)
     {
+        
         if (action_in_progress)
         {
         ack_cache_set(active_seq,active_action, ACK_STATUS_ERROR);
@@ -632,7 +604,26 @@ void HAL_UARTEx_RxEventCallback(
         return;
     }
 
-    uart_dma_collect(Size);
+    uart_dma_rx_collect(
+        &uart_dma_rx,
+        dma_rx_buf,
+        Size,
+        &uart_line_rx);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == NULL ||
+        huart != &huart1 ||
+        huart->Instance != USART1)
+    {
+        return;
+    }
+
+    uart_rx_recovery_on_error(
+        &uart_rx_recovery,
+        huart,
+        &huart1);
 }
 /* USER CODE END 4 */
 

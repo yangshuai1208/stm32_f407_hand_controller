@@ -72,6 +72,48 @@ void uart_line_rx_recover_overflow(uart_line_rx_t *rx)
     }
 }
 
+void uart_line_rx_force_resync(uart_line_rx_t *rx)
+{
+    if (rx == NULL)
+    {
+        return;
+    }
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    rx->tail = rx->head;
+    rx->overflow = 0U;
+    rx->line_index = 0U;
+    rx->line_discard = 1U;
+
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+}
+
+void uart_line_rx_reset_after_uart_abort(uart_line_rx_t *rx)
+{
+    if (rx == NULL)
+    {
+        return;
+    }
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    rx->tail = rx->head;
+    rx->overflow = 0U;
+    rx->line_index = 0U;
+    rx->line_discard = 0U;
+
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+}
+
 static uint8_t uart_line_rx_pop(uart_line_rx_t *rx, uint8_t *byte)
 {
     if (rx == NULL || byte == NULL)

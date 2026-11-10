@@ -24,6 +24,9 @@ void uart_line_rx_push_isr(uart_line_rx_t *rx, uint8_t byte);
 void uart_line_rx_mark_overflow_isr(uart_line_rx_t *rx);
 uint8_t uart_line_rx_has_overflow(const uart_line_rx_t *rx);
 void uart_line_rx_recover_overflow(uart_line_rx_t *rx);
+void uart_line_rx_force_resync(uart_line_rx_t *rx);
+/* Call only after UART RX is stopped and pending hardware RX data is drained. */
+void uart_line_rx_reset_after_uart_abort(uart_line_rx_t *rx);
 uint8_t uart_line_rx_poll(uart_line_rx_t *rx,
                           char out[UART_LINE_BUFFER_SIZE]);
 
