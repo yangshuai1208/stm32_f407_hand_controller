@@ -409,6 +409,16 @@
               <FilePath>..\Core\Src\hand_protocol.c</FilePath>
             </File>
             <File>
+              <FileName>hand_ack_cache.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\hand_ack_cache.c</FilePath>
+            </File>
+            <File>
+              <FileName>hand_comm_safety.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\hand_comm_safety.c</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>

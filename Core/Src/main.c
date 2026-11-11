@@ -27,6 +27,8 @@
 /* USER CODE BEGIN Includes */
 #include "hand_protocol.h"
 #include "hand_servo.h"
+#include "hand_ack_cache.h"
+#include "hand_comm_safety.h"
 #include "uart_dma_rx.h"
 #include "uart_line.h"
 #include "uart_rx_recovery.h"
@@ -39,30 +41,6 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-  typedef enum
-  {
-    ACK_STATUS_NONE=0,
-    ACK_STATUS_IN_PROGRESS,
-    ACK_STATUS_OK,
-    ACK_STATUS_PREEMPTED,
-    ACK_STATUS_BUSY,
-    ACK_STATUS_ERROR
-  }ack_status_t;
-
-  #define ACK_CACHE_SIZE 4
-
-typedef struct
-{
-    uint8_t valid;
-    uint32_t seq;
-    hand_action_t action;
-    ack_status_t status;
-} ack_record_t;
-
-  static ack_record_t ack_cache[ACK_CACHE_SIZE];
-
-  static uint8_t ack_cache_next=0;
-
   static const char *ack_status_to_string(
     ack_status_t status)
 {
@@ -89,45 +67,6 @@ typedef struct
     }
 }
 
-static ack_record_t *ack_cache_find(
-    uint32_t seq)
-{
-    for (uint8_t i = 0;
-         i < ACK_CACHE_SIZE;
-         i++)
-    {
-        if (ack_cache[i].valid &&
-            ack_cache[i].seq == seq)
-        {
-            return &ack_cache[i];
-        }
-    }
-
-    return NULL;
-}
-
-static void ack_cache_set(
-    uint32_t seq,
-    hand_action_t action,
-    ack_status_t status)
-{
-    ack_record_t *record = ack_cache_find(seq);
-
-   
-    if (record != NULL)
-    {
-        record->status = status;
-        return;
-    }
-
-    ack_cache[ack_cache_next].valid = 1;
-    ack_cache[ack_cache_next].seq = seq;
-    ack_cache[ack_cache_next].action = action;
-    ack_cache[ack_cache_next].status = status;
-
-    ack_cache_next =
-        (ack_cache_next + 1U) % ACK_CACHE_SIZE;
-}
 static void send_ack(
     uint32_t seq,
     ack_status_t status)
@@ -173,6 +112,8 @@ static uint8_t dma_rx_buf[UART_DMA_RX_BUF_SIZE];
 static uart_dma_rx_t uart_dma_rx;
 static uart_line_rx_t uart_line_rx;
 static uart_rx_recovery_t uart_rx_recovery;
+static hand_ack_cache_t hand_ack_cache;
+static hand_comm_safety_t hand_comm_safety;
 
 
 uint8_t action_in_progress = 0;
@@ -233,6 +174,8 @@ int main(void)
 	 uart_dma_rx_init(&uart_dma_rx);
   uart_line_rx_init(&uart_line_rx);
   uart_rx_recovery_init(&uart_rx_recovery);
+  hand_ack_cache_init(&hand_ack_cache);
+  hand_comm_safety_init(&hand_comm_safety);
 
 	if(hand_servo_init(&hi2c1)==HAL_OK)
 	{
@@ -266,6 +209,15 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 while (1)
 {
+	/* Consume a latched UART error and cancel motion before recovery can block. */
+	hand_comm_safety_service(
+		&hand_comm_safety,
+		&action_in_progress,
+		&active_seq,
+		&active_action,
+		&hand_ack_cache,
+		hand_servo_start_action);
+
 	/* Sole main-loop owner of DMA abort/restart; call once per iteration. */
 	uart_rx_recovery_service(
 		&uart_rx_recovery,
@@ -273,6 +225,15 @@ while (1)
 		dma_rx_buf,
 		&uart_dma_rx,
 		&uart_line_rx);
+
+	/* Cancel the active trajectory before dispatching commands or updating servos. */
+	hand_comm_safety_service(
+		&hand_comm_safety,
+		&action_in_progress,
+		&active_seq,
+		&active_action,
+		&hand_ack_cache,
+		hand_servo_start_action);
 
 	if (uart_rx_recovery_commands_allowed(&uart_rx_recovery))
 	{
@@ -337,8 +298,9 @@ while (1)
 
             if (!active_seq_handled)
             {
-            ack_record_t *old_record =
-                ack_cache_find(
+            hand_ack_record_t *old_record =
+                hand_ack_cache_find(
+                    &hand_ack_cache,
                     command.seq);
 
        if (old_record != NULL)
@@ -381,7 +343,8 @@ while (1)
                         HAND_ACTION_STOP)
                     == HAL_OK)
                 {
-                    ack_cache_set(
+                    hand_ack_cache_set(
+                        &hand_ack_cache,
                         command.seq,
                         command.action,
                         ACK_STATUS_OK);
@@ -392,7 +355,7 @@ while (1)
                      */
                     if (had_active)
                     {
-                       ack_cache_set(old_seq,old_action,ACK_STATUS_PREEMPTED);
+                       hand_ack_cache_set(&hand_ack_cache,old_seq,old_action,ACK_STATUS_PREEMPTED);
 
                         send_ack(
                             old_seq,
@@ -413,7 +376,7 @@ while (1)
                 }
                 else
                 {
-                  ack_cache_set(command.seq,command.action,ACK_STATUS_ERROR);
+                  hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_ERROR);
 
                     send_ack(
                         command.seq,
@@ -431,6 +394,7 @@ while (1)
                         command.action)
                     == HAL_OK)
                 {
+                    hand_comm_safety_on_action_started(&hand_comm_safety);
                     active_seq =
                         command.seq;
 
@@ -439,14 +403,14 @@ while (1)
 
                     action_in_progress = 1;
 
-                  ack_cache_set(command.seq,command.action,ACK_STATUS_IN_PROGRESS);
+                  hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_IN_PROGRESS);
                     send_ack(
                         command.seq,
                         ACK_STATUS_IN_PROGRESS);
                 }
                 else
                 {
-            ack_cache_set(command.seq,command.action,ACK_STATUS_ERROR);
+            hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_ERROR);
 
                     send_ack(
                         command.seq,
@@ -460,7 +424,7 @@ while (1)
              */
             else
             {
-            ack_cache_set(command.seq,command.action,ACK_STATUS_BUSY);
+            hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_BUSY);
 
                 send_ack(
                     command.seq,
@@ -488,7 +452,7 @@ while (1)
         
         if (action_in_progress)
         {
-        ack_cache_set(active_seq,active_action, ACK_STATUS_ERROR);
+        hand_ack_cache_set(&hand_ack_cache,active_seq,active_action, ACK_STATUS_ERROR);
 
             send_ack(
                 active_seq,
@@ -510,7 +474,7 @@ while (1)
     if (action_in_progress &&
         !hand_servo_is_busy())
     {
-        ack_cache_set(active_seq,active_action,ACK_STATUS_OK);
+        hand_ack_cache_set(&hand_ack_cache,active_seq,active_action,ACK_STATUS_OK);
 
         send_ack(
             active_seq,
@@ -624,6 +588,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         &uart_rx_recovery,
         huart,
         &huart1);
+    hand_comm_safety_notify_uart_error_isr(&hand_comm_safety);
 }
 /* USER CODE END 4 */
 
