@@ -10,6 +10,7 @@ void hal_mock_set_i2c_write_duration(uint32_t milliseconds);
 uint32_t hal_mock_get_i2c_write_count(void);
 uint32_t hal_mock_get_tick(void);
 void hal_mock_fail_next_i2c_write(void);
+void hal_mock_fail_i2c_write_on_nth_from_now(uint32_t nth_write);
 
 static I2C_HandleTypeDef mock_i2c;
 
@@ -116,8 +117,7 @@ static void test_slow_i2c_requires_20ms_after_batch_completion(void)
     assert(hand_servo_get_state() == HAND_MOTION_OPENING);
 
     /*
-     * Proposed cadence: the next round must wait 20 ms from the last write's
-     * completion. The current production code is expected to fail this check.
+     * The next round waits 20 ms from completion of the current write batch.
      */
     uint32_t writes_after_batch = hal_mock_get_i2c_write_count();
     uint32_t completion_tick = hal_mock_get_tick();
@@ -135,36 +135,44 @@ static void test_slow_i2c_requires_20ms_after_batch_completion(void)
     assert(hand_servo_start_action(HAND_ACTION_STOP) == HAL_OK);
 }
 
-static void test_i2c_failure_and_fault_stop(void)
+static void test_i2c_partial_failure_fault_and_stop(void)
 {
     prepare_servo_fixture();
 
-    /* An actual PCA write failure in update must latch FAULT. */
-    assert(hand_servo_start_action(HAND_ACTION_RELEASE) == HAL_OK);
+    /* GRAB moves all five initialized channels from 90 to 120 degrees. */
+    assert(hand_servo_start_action(HAND_ACTION_GRAB) == HAL_OK);
     hal_mock_advance_tick(20U);
     uint32_t writes_before_fault = hal_mock_get_i2c_write_count();
-    hal_mock_fail_next_i2c_write();
+    hal_mock_fail_i2c_write_on_nth_from_now(3U);
+
+    /* The first two channel writes succeed; the third write fails. */
     assert(hand_servo_update() == HAL_ERROR);
-    assert(hal_mock_get_i2c_write_count() == writes_before_fault + 1U);
+    assert(hal_mock_get_i2c_write_count() == writes_before_fault + 3U);
     assert(hand_servo_get_state() == HAND_MOTION_FAULT);
     assert(hand_servo_is_busy() == 0U);
 
-    /* STOP in FAULT cancels software progression but preserves FAULT. */
-    uint32_t writes_in_fault = hal_mock_get_i2c_write_count();
-    assert(hand_servo_start_action(HAND_ACTION_STOP) == HAL_OK);
-    assert(hand_servo_get_state() == HAND_MOTION_FAULT);
-    assert(hal_mock_get_i2c_write_count() == writes_in_fault);
+    /* FAULT prevents the remaining channels from being written on later calls. */
+    uint32_t writes_after_fault = hal_mock_get_i2c_write_count();
     assert(hand_servo_update() == HAL_ERROR);
-    assert(hal_mock_get_i2c_write_count() == writes_in_fault);
+    assert(hal_mock_get_i2c_write_count() == writes_after_fault);
 
-    /* All ordinary actions are rejected without changing the state or bus. */
+    /* Ordinary actions remain rejected after a partial batch failure. */
     assert(hand_servo_start_action(HAND_ACTION_OPEN) == HAL_ERROR);
     assert(hand_servo_get_state() == HAND_MOTION_FAULT);
     assert(hand_servo_start_action(HAND_ACTION_GRAB) == HAL_ERROR);
     assert(hand_servo_get_state() == HAND_MOTION_FAULT);
     assert(hand_servo_start_action(HAND_ACTION_RELEASE) == HAL_ERROR);
     assert(hand_servo_get_state() == HAND_MOTION_FAULT);
+    assert(hal_mock_get_i2c_write_count() == writes_after_fault);
+
+    /* STOP in FAULT cancels software progression but preserves FAULT. */
+    uint32_t writes_in_fault = writes_after_fault;
+    assert(hand_servo_start_action(HAND_ACTION_STOP) == HAL_OK);
+    assert(hand_servo_get_state() == HAND_MOTION_FAULT);
     assert(hal_mock_get_i2c_write_count() == writes_in_fault);
+    assert(hand_servo_update() == HAL_ERROR);
+    assert(hal_mock_get_i2c_write_count() == writes_in_fault);
+
 }
 
 int main(void)
@@ -174,7 +182,7 @@ int main(void)
     test_tick_wraparound();
     test_long_delay_advances_only_one_round();
     test_slow_i2c_requires_20ms_after_batch_completion();
-    test_i2c_failure_and_fault_stop();
+    test_i2c_partial_failure_fault_and_stop();
 
     return 0;
 }

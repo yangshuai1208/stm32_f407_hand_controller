@@ -5,6 +5,7 @@ static uint32_t fake_primask;
 static uint32_t i2c_write_count;
 static uint32_t i2c_write_duration_ms;
 static uint8_t fail_next_i2c_write;
+static uint32_t fail_i2c_write_countdown;
 static HAL_StatusTypeDef uart_abort_result;
 static HAL_StatusTypeDef uart_start_result;
 static uint32_t uart_abort_count;
@@ -18,6 +19,7 @@ void hal_mock_reset(void)
     i2c_write_count = 0U;
     i2c_write_duration_ms = 0U;
     fail_next_i2c_write = 0U;
+    fail_i2c_write_countdown = 0U;
     uart_abort_result = HAL_OK;
     uart_start_result = HAL_OK;
     uart_abort_count = 0U;
@@ -112,6 +114,11 @@ void hal_mock_fail_next_i2c_write(void)
     fail_next_i2c_write = 1U;
 }
 
+void hal_mock_fail_i2c_write_on_nth_from_now(uint32_t nth_write)
+{
+    fail_i2c_write_countdown = nth_write;
+}
+
 uint32_t HAL_GetTick(void)
 {
     return fake_tick;
@@ -141,9 +148,20 @@ HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *hi2c,
     i2c_write_count++;
     fake_tick += i2c_write_duration_ms;
 
-    if (fail_next_i2c_write != 0U)
+    uint8_t should_fail = fail_next_i2c_write;
+    fail_next_i2c_write = 0U;
+
+    if (fail_i2c_write_countdown != 0U)
     {
-        fail_next_i2c_write = 0U;
+        fail_i2c_write_countdown--;
+        if (fail_i2c_write_countdown == 0U)
+        {
+            should_fail = 1U;
+        }
+    }
+
+    if (should_fail != 0U)
+    {
         return HAL_ERROR;
     }
 
