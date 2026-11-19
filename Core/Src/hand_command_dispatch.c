@@ -132,3 +132,51 @@ void hand_command_dispatch(
         ops->send_ack(command->seq, ACK_STATUS_BUSY);
     }
 }
+
+void hand_command_service_motion(
+    uint8_t *action_in_progress,
+    uint32_t *active_seq,
+    hand_action_t *active_action,
+    hand_ack_cache_t *ack_cache,
+    hand_command_update_fn update,
+    hand_command_is_busy_fn is_busy,
+    hand_command_send_ack_fn send_ack)
+{
+    if (action_in_progress == 0 || active_seq == 0 ||
+        active_action == 0 || ack_cache == 0 || update == 0 ||
+        is_busy == 0 || send_ack == 0)
+    {
+        return;
+    }
+
+    HAL_StatusTypeDef update_ret = update();
+
+    if (update_ret != HAL_OK)
+    {
+        if (*action_in_progress != 0U)
+        {
+            hand_ack_cache_set(ack_cache,
+                               *active_seq,
+                               *active_action,
+                               ACK_STATUS_ERROR);
+            send_ack(*active_seq, ACK_STATUS_ERROR);
+        }
+
+        *action_in_progress = 0U;
+        *active_action = HAND_ACTION_NONE;
+        *active_seq = 0U;
+    }
+
+    if (*action_in_progress != 0U && is_busy() == 0U)
+    {
+        hand_ack_cache_set(ack_cache,
+                           *active_seq,
+                           *active_action,
+                           ACK_STATUS_OK);
+        send_ack(*active_seq, ACK_STATUS_OK);
+
+        *action_in_progress = 0U;
+        *active_action = HAND_ACTION_NONE;
+        *active_seq = 0U;
+    }
+}

@@ -305,53 +305,15 @@ while (1)
      */
             }
 
-    HAL_StatusTypeDef update_ret =
-        hand_servo_update();
+    hand_command_service_motion(
+        &action_in_progress,
+        &active_seq,
+        &active_action,
+        &hand_ack_cache,
+        hand_servo_update,
+        hand_servo_is_busy,
+        send_ack);
 
-	
-    /*
-     * 7. 执行发生错误
-     */
-    if (update_ret != HAL_OK)
-    {
-        
-        if (action_in_progress)
-        {
-        hand_ack_cache_set(&hand_ack_cache,active_seq,active_action, ACK_STATUS_ERROR);
-
-            send_ack(
-                active_seq,
-                ACK_STATUS_ERROR);
-        }
-
-        action_in_progress = 0;
-
-        active_action =
-            HAND_ACTION_NONE;
-
-        active_seq = 0;
-    }
-
-
-    /*
-     * 8. 当前动作完成
-     */
-    if (action_in_progress &&
-        !hand_servo_is_busy())
-    {
-        hand_ack_cache_set(&hand_ack_cache,active_seq,active_action,ACK_STATUS_OK);
-
-        send_ack(
-            active_seq,
-            ACK_STATUS_OK);
-
-        action_in_progress = 0;
-
-        active_action =
-            HAND_ACTION_NONE;
-
-        active_seq = 0;
-    }
 }
 
     /* USER CODE END WHILE */
