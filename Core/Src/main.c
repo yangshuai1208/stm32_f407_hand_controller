@@ -29,6 +29,7 @@
 #include "hand_servo.h"
 #include "hand_ack_cache.h"
 #include "hand_comm_safety.h"
+#include "hand_command_dispatch.h"
 #include "uart_dma_rx.h"
 #include "uart_line.h"
 #include "uart_rx_recovery.h"
@@ -90,6 +91,26 @@ static void send_ack(
             100);
     }
 }
+
+static void send_seq_conflict(void)
+{
+    const char msg[] =
+        "ERR:SEQ_CONFLICT\r\n";
+
+    HAL_UART_Transmit(
+        &huart1,
+        (uint8_t *)msg,
+        sizeof(msg) - 1U,
+        100);
+}
+
+static const hand_command_dispatch_ops_t hand_command_dispatch_ops =
+{
+    hand_servo_start_action,
+    hand_servo_is_busy,
+    send_ack,
+    send_seq_conflict
+};
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -267,171 +288,15 @@ while (1)
         }
         else
         {
-            /*
-             * 2. 先检查活动SEQ，再查缓存
-             */
-            uint8_t active_seq_handled = 0;
-
-            if (action_in_progress &&
-                command.seq == active_seq)
-            {
-                if (command.action != active_action)
-                {
-                    const char msg[] =
-                        "ERR:SEQ_CONFLICT\r\n";
-
-                    HAL_UART_Transmit(
-                        &huart1,
-                        (uint8_t *)msg,
-                        sizeof(msg) - 1U,
-                        100);
-                }
-                else
-                {
-                    send_ack(
-                        command.seq,
-                        ACK_STATUS_IN_PROGRESS);
-                }
-
-                active_seq_handled = 1;
-            }
-
-            if (!active_seq_handled)
-            {
-            hand_ack_record_t *old_record =
-                hand_ack_cache_find(
-                    &hand_ack_cache,
-                    command.seq);
-
-       if (old_record != NULL)
-    {
- 
-        if (old_record->action != command.action)
-        {
-            const char msg[] =
-            "ERR:SEQ_CONFLICT\r\n";
-
-            HAL_UART_Transmit(
-            &huart1,
-            (uint8_t *)msg,
-            sizeof(msg) - 1U,
-            100);
+            hand_command_dispatch(
+                &command,
+                &action_in_progress,
+                &active_seq,
+                &active_action,
+                &hand_ack_cache,
+                &hand_comm_safety,
+                &hand_command_dispatch_ops);
         }
-    else
-    {
-      
-        send_ack(
-            command.seq,
-            old_record->status);
-    }
-    }
-
-            /*
-             * 3. STOP最高优先级
-             */
-            else if (
-                command.action ==
-                HAND_ACTION_STOP)
-            {
-                uint8_t had_active =action_in_progress;
-
-                uint32_t old_seq =active_seq;
-
-                hand_action_t old_action = active_action;
-
-                if (hand_servo_start_action(
-                        HAND_ACTION_STOP)
-                    == HAL_OK)
-                {
-                    hand_ack_cache_set(
-                        &hand_ack_cache,
-                        command.seq,
-                        command.action,
-                        ACK_STATUS_OK);
-
-                    /*
-                     * STOP成功接管之后，
-                     * 原动作才正式标记PREEMPTED。
-                     */
-                    if (had_active)
-                    {
-                       hand_ack_cache_set(&hand_ack_cache,old_seq,old_action,ACK_STATUS_PREEMPTED);
-
-                        send_ack(
-                            old_seq,
-                            ACK_STATUS_PREEMPTED);
-                    }
-
-                    active_seq =
-                        0;
-
-                    active_action =
-                        HAND_ACTION_NONE;
-
-                    action_in_progress = 0;
-
-                    send_ack(
-                        command.seq,
-                        ACK_STATUS_OK);
-                }
-                else
-                {
-                  hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_ERROR);
-
-                    send_ack(
-                        command.seq,
-                        ACK_STATUS_ERROR);
-                }
-            }
-
-            /*
-             * 4. 普通动作：
-             * 只有空闲时允许启动
-             */
-            else if (!hand_servo_is_busy())
-            {
-                if (hand_servo_start_action(
-                        command.action)
-                    == HAL_OK)
-                {
-                    hand_comm_safety_on_action_started(&hand_comm_safety);
-                    active_seq =
-                        command.seq;
-
-                    active_action =
-                        command.action;
-
-                    action_in_progress = 1;
-
-                  hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_IN_PROGRESS);
-                    send_ack(
-                        command.seq,
-                        ACK_STATUS_IN_PROGRESS);
-                }
-                else
-                {
-            hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_ERROR);
-
-                    send_ack(
-                        command.seq,
-                        ACK_STATUS_ERROR);
-                }
-            }
-
-            /*
-             * 5. 当前busy，
-             * 普通动作拒绝
-             */
-            else
-            {
-            hand_ack_cache_set(&hand_ack_cache,command.seq,command.action,ACK_STATUS_BUSY);
-
-                send_ack(
-                    command.seq,
-                    ACK_STATUS_BUSY);
-            }
-        }
-    }
 
 	}
 

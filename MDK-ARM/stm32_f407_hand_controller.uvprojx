@@ -419,6 +419,11 @@
               <FilePath>..\Core\Src\hand_comm_safety.c</FilePath>
             </File>
             <File>
+              <FileName>hand_command_dispatch.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\hand_command_dispatch.c</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>
