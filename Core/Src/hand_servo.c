@@ -149,6 +149,7 @@ HAL_StatusTypeDef hand_servo_init(I2C_HandleTypeDef *hi2c)
 
     ret = pca9685_init(hi2c);
     if (ret != HAL_OK) {
+        motion_state = HAND_MOTION_FAULT;
         return ret;
     }
 
@@ -157,6 +158,7 @@ HAL_StatusTypeDef hand_servo_init(I2C_HandleTypeDef *hi2c)
 
         ret = pca9685_set_servo_angle(hand_servo_channels[i], current_angles[i]);
         if (ret != HAL_OK) {
+            motion_state = HAND_MOTION_FAULT;
             return ret;
         }
 

@@ -66,6 +66,10 @@ HAL_StatusTypeDef pca9685_set_pwm(uint8_t channel, uint16_t on, uint16_t off)
         return HAL_ERROR;
     }
 
+    if (on > 4095U || off > 4095U) {
+        return HAL_ERROR;
+    }
+
     uint8_t data[4];
 
     data[0] = on & 0xFF;

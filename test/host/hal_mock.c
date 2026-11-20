@@ -1,4 +1,8 @@
 #include "stm32f4xx_hal.h"
+#include "hal_mock_transactions.h"
+
+#include <stdio.h>
+#include <string.h>
 
 static uint32_t fake_tick;
 static uint32_t fake_primask;
@@ -11,9 +15,93 @@ static HAL_StatusTypeDef uart_start_result;
 static uint32_t uart_abort_count;
 static uint32_t uart_start_count;
 static uint32_t uart_clear_overrun_count;
+static hal_mock_i2c_transaction_t i2c_transactions[HAL_MOCK_I2C_TRANSACTION_CAPACITY];
+static size_t i2c_transaction_count;
+static size_t i2c_transaction_overflow_count;
+static size_t i2c_payload_overflow_count;
+
+void hal_mock_i2c_transactions_reset(void)
+{
+    i2c_transaction_count = 0U;
+    i2c_transaction_overflow_count = 0U;
+    i2c_payload_overflow_count = 0U;
+    memset(i2c_transactions, 0, sizeof(i2c_transactions));
+}
+
+size_t hal_mock_i2c_transaction_count(void)
+{
+    return i2c_transaction_count;
+}
+
+const hal_mock_i2c_transaction_t *hal_mock_i2c_transaction_at(size_t index)
+{
+    if (index >= i2c_transaction_count)
+    {
+        return NULL;
+    }
+    return &i2c_transactions[index];
+}
+
+size_t hal_mock_i2c_transaction_overflow_count(void)
+{
+    return i2c_transaction_overflow_count;
+}
+
+size_t hal_mock_i2c_payload_overflow_count(void)
+{
+    return i2c_payload_overflow_count;
+}
+
+static void hal_mock_record_i2c_write(I2C_HandleTypeDef *hi2c,
+                                      uint16_t device_address,
+                                      uint16_t register_address,
+                                      uint16_t register_address_size,
+                                      const uint8_t *data,
+                                      uint16_t data_length,
+                                      uint32_t timeout,
+                                      HAL_StatusTypeDef result)
+{
+    if (i2c_transaction_count >= HAL_MOCK_I2C_TRANSACTION_CAPACITY)
+    {
+        i2c_transaction_overflow_count++;
+        fprintf(stderr, "HAL mock I2C transaction log full (capacity=%u)\n",
+                (unsigned)HAL_MOCK_I2C_TRANSACTION_CAPACITY);
+        return;
+    }
+
+    hal_mock_i2c_transaction_t *entry =
+        &i2c_transactions[i2c_transaction_count++];
+    entry->handle = hi2c;
+    entry->device_address = device_address;
+    entry->register_address = register_address;
+    entry->register_address_size = register_address_size;
+    entry->data_length = data_length;
+    entry->timeout = timeout;
+    entry->result = result;
+
+    size_t bytes_to_copy = data_length;
+    if (bytes_to_copy > HAL_MOCK_I2C_PAYLOAD_CAPACITY)
+    {
+        bytes_to_copy = HAL_MOCK_I2C_PAYLOAD_CAPACITY;
+        i2c_payload_overflow_count++;
+        fprintf(stderr, "HAL mock I2C payload exceeds log capacity (length=%u, capacity=%u)\n",
+                (unsigned)data_length, (unsigned)HAL_MOCK_I2C_PAYLOAD_CAPACITY);
+    }
+    if (bytes_to_copy != 0U && data == NULL)
+    {
+        i2c_payload_overflow_count++;
+        fprintf(stderr, "HAL mock I2C payload pointer is null (length=%u)\n",
+                (unsigned)data_length);
+    }
+    else if (bytes_to_copy != 0U)
+    {
+        memcpy(entry->data, data, bytes_to_copy);
+    }
+}
 
 void hal_mock_reset(void)
 {
+    hal_mock_i2c_transactions_reset();
     fake_tick = 0U;
     fake_primask = 0U;
     i2c_write_count = 0U;
@@ -137,14 +225,6 @@ HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *hi2c,
                                     uint16_t Size,
                                     uint32_t Timeout)
 {
-    (void)hi2c;
-    (void)DevAddress;
-    (void)MemAddress;
-    (void)MemAddSize;
-    (void)pData;
-    (void)Size;
-    (void)Timeout;
-
     i2c_write_count++;
     fake_tick += i2c_write_duration_ms;
 
@@ -160,12 +240,10 @@ HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *hi2c,
         }
     }
 
-    if (should_fail != 0U)
-    {
-        return HAL_ERROR;
-    }
-
-    return HAL_OK;
+    HAL_StatusTypeDef result = (should_fail != 0U) ? HAL_ERROR : HAL_OK;
+    hal_mock_record_i2c_write(hi2c, DevAddress, MemAddress, MemAddSize,
+                              pData, Size, Timeout, result);
+    return result;
 }
 
 HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *huart)
