@@ -95,6 +95,10 @@ static HAL_StatusTypeDef hand_servo_move_one_smooth(uint8_t index, uint16_t targ
         return HAL_ERROR;
     }
 
+    if (motion_state == HAND_MOTION_FAULT) {
+        return HAL_ERROR;
+    }
+
     HAL_StatusTypeDef ret;
     uint8_t channel = hand_servo_channels[index];
 
